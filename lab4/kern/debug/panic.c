@@ -15,7 +15,7 @@ __panic(const char *file, int line, const char *fmt, ...) {
         goto panic_dead;
     }
     is_panic = 1;
-    is
+
     // print the 'message'
     va_list ap;
     va_start(ap, fmt);
