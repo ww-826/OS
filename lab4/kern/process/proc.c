@@ -85,6 +85,7 @@ void switch_to(struct context *from, struct context *to);
 static struct proc_struct *
 alloc_proc(void)
 {
+    //kmalloc分配内存
     struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
     if (proc != NULL)
     {
@@ -105,6 +106,9 @@ alloc_proc(void)
          *       char name[PROC_NAME_LEN + 1];               // Process name
          */
         // Initialize basic proc_struct fields to safe defaults
+        //context是进程的上下文结构，用于保存进程在内核态下的寄存器状态，以便在进程切换时能够恢复执行状态。（被调用者保存寄存器）
+        //tf保存了进程在发生中断或异常时的寄存器状态，用于系统调用/中断返回时从内核态返回用户态时恢复执行状态。
+        //新线程没运行过，没法“暂停”在 switch_to 里。所以我们伪造了一个 trapframe，假装它刚从一次中断中返回，直接跳到线程入口函数。
         proc->state = PROC_UNINIT;
         proc->pid = -1;
         proc->runs = 0;
@@ -112,8 +116,9 @@ alloc_proc(void)
         proc->need_resched = 0;
         proc->parent = NULL;
         proc->mm = NULL;
-        memset(&(proc->context), 0, sizeof(struct context));
+        memset(&(proc->context), 0, sizeof(struct context));   //用memset清零，保证初始状态安全
         proc->tf = NULL;
+        //页表
         proc->pgdir = boot_pgdir_pa; /* default to kernel boot page directory */
         proc->flags = 0;
         memset(proc->name, 0, sizeof(proc->name));
@@ -184,15 +189,15 @@ get_pid(void)
     }
     return last_pid;
 }
-
+//移交cpu控制权
 // proc_run - make process "proc" running on cpu
 // NOTE: before call switch_to, should load  base addr of "proc"'s new PDT
 void proc_run(struct proc_struct *proc)
 {
-    if (proc != current)
+    if (proc != current)  //切自己就不折腾了
     {
 
-        // LAB4:EXERCISE3 YOUR CODE
+        // LAB4:EXERCISE3 2311962
         /*
          * Some Useful MACROs, Functions and DEFINEs, you can use them in below implementation.
          * MACROs or Functions:
@@ -209,20 +214,22 @@ void proc_run(struct proc_struct *proc)
          * nest local_intr_save/local_intr_restore because callers (like
          * schedule()) may already have disabled interrupts.
          */
-        local_intr_save(intr_flag);
+        // 确保在切换过程中保持中断状态。嵌套使用local_intr_save/local_intr_restore是安全的，
+        // 因为调用者（如schedule()）可能已经禁用了中断。
+        local_intr_save(intr_flag);      //关中断，保证切换过程原子性不被打断
 
         struct proc_struct *prev = current;
 
         /* switch current pointer to the new process */
-        current = proc;
+        current = proc;  //更新全局指针，现在的当前是新线程了
 
         /* load the new page table base before switching address space */
-        lsatp((unsigned int)proc->pgdir);
+        lsatp((unsigned int)proc->pgdir);  //切换页表，换到新线程的地址空间
 
         /* perform context switch: save prev context, restore new one */
-        switch_to(&prev->context, &proc->context);
+        switch_to(&prev->context, &proc->context);  //切换上下文（保存寄存器，恢复寄存器），这里执行完cpu就跳到新线程代码了
 
-        local_intr_restore(intr_flag);
+        local_intr_restore(intr_flag);     //开中断
     }
 }
 
@@ -264,14 +271,15 @@ find_proc(int pid)
 // kernel_thread - create a kernel thread using "fn" function
 // NOTE: the contents of temp trapframe tf will be copied to
 //       proc->tf in do_fork-->copy_thread function
+//线程第一次被调度，通过forkret恢复tf时，epc会让pc跳到kernel_thread_entry，会调用s0里的函数
 int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
 {
-    struct trapframe tf;
+    struct trapframe tf;   //创建临时的tf
     memset(&tf, 0, sizeof(struct trapframe));
-    tf.gpr.s0 = (uintptr_t)fn;
+    tf.gpr.s0 = (uintptr_t)fn;  //要执行的函数指针
     tf.gpr.s1 = (uintptr_t)arg;
     tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
-    tf.epc = (uintptr_t)kernel_thread_entry;
+    tf.epc = (uintptr_t)kernel_thread_entry;  //设置入口地址为kernel_thread_entry
     return do_fork(clone_flags | CLONE_VM, 0, &tf);
 }
 
@@ -310,6 +318,7 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 static void
 copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
 {
+    //在内核栈顶预留一块空间放trapframe
     proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE - sizeof(struct trapframe));
     *(proc->tf) = *tf;
 
@@ -317,8 +326,8 @@ copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
     proc->tf->gpr.a0 = 0;
     proc->tf->gpr.sp = (esp == 0) ? (uintptr_t)proc->tf : esp;
 
-    proc->context.ra = (uintptr_t)forkret;
-    proc->context.sp = (uintptr_t)(proc->tf);
+    proc->context.ra = (uintptr_t)forkret;   //新线程第一次执行跳到forkret
+    proc->context.sp = (uintptr_t)(proc->tf);  //设置上下文栈指针指向刚刚预留的tf
 }
 
 /* do_fork -     parent process for a new child process
@@ -335,7 +344,7 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
         goto fork_out;
     }
     ret = -E_NO_MEM;
-    // LAB4:EXERCISE2 YOUR CODE
+// LAB4:EXERCISE2 2311962
     /*
      * Some Useful MACROs, Functions and DEFINEs, you can use them in below implementation.
      * MACROs or Functions:
@@ -360,7 +369,28 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
     //    5. insert proc_struct into hash_list && proc_list
     //    6. call wakeup_proc to make the new child process RUNNABLE
     //    7. set ret vaule using child proc's pid
+
+    proc = alloc_proc();   //PCB
     
+    if (proc == NULL) {goto fork_out;}   //分配内核栈
+
+    // 设置父进程信息
+    proc->parent = current;
+
+    if (setup_kstack(proc) != 0) goto bad_fork_cleanup_proc;
+
+    if (copy_mm(clone_flags, proc) != 0) goto bad_fork_cleanup_kstack;
+
+    copy_thread(proc, stack, tf);  //伪造现场，让内核活过来
+
+    proc->pid = get_pid();
+    hash_proc(proc);
+    list_add(&proc_list, &proc->list_link);  //加入全局哈希表和进程链表
+    wakeup_proc(proc);  //把状态改为RUNNABLE，调度器可见
+
+    nr_process++;
+    ret = proc->pid;
+
 fork_out:
     return ret;
 

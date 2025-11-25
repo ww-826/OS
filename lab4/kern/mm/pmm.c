@@ -220,19 +220,26 @@ void pmm_init(void)
 //  la:     the linear address need to map
 //  create: a logical value to decide if alloc a page for PT
 // return vaule: the kernel virtual address of this pte
+//给定虚拟地址，找到页表中对应的PTE的地址，不存在则创建
+//一级目录PDX1,二级目录PDX0,页表PTX
+//pgdir页目录表基址（一级目录起始地址）
+//la要处理的线性地址（虚拟地址）
 pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create)
 {
-    pde_t *pdep1 = &pgdir[PDX1(la)];
-    if (!(*pdep1 & PTE_V))
+    pde_t *pdep1 = &pgdir[PDX1(la)];     //计算在一级页表中的位置
+    if (!(*pdep1 & PTE_V))     //检查一级页表项是否存在（PTE_V代表valid）
     {
         struct Page *page;
-        if (!create || (page = alloc_page()) == NULL)
+        if (!create || (page = alloc_page()) == NULL)    //如果不允许创建，或内存耗尽失败，返回NULL
         {
             return NULL;
         }
-        set_page_ref(page, 1);
-        uintptr_t pa = page2pa(page);
-        memset(KADDR(pa), 0, PGSIZE);
+        //初始化新分配的页
+        set_page_ref(page, 1);  //设置引用计数，表示这一页被占用了
+        uintptr_t pa = page2pa(page);   //获取物理地址
+        memset(KADDR(pa), 0, PGSIZE);   //清空该页内存
+        //将新页的物理地址填入一级页表项，并设置权限
+        //PTE_U表示用户态可访问，PTE_V表示该页有效
         *pdep1 = pte_create(page2ppn(page), PTE_U | PTE_V);
     }
     pde_t *pdep0 = &((pte_t *)KADDR(PDE_ADDR(*pdep1)))[PDX0(la)];
@@ -269,6 +276,7 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store)
 // page_remove_pte - free an Page sturct which is related linear address la
 //                - and clean(invalidate) pte which is related linear address la
 // note: PT is changed, so the TLB need to be invalidate
+//断开映射
 static inline void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep)
 {
     if (*ptep & PTE_V)
@@ -312,17 +320,18 @@ int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm)
     {
         return -E_NO_MEM;
     }
-    page_ref_inc(page);
+    page_ref_inc(page);   //引用计数加1
+    //如果该虚拟地址已经映射了物理页，先处理原来的映射
     if (*ptep & PTE_V)
     {
         struct Page *p = pte2page(*ptep);
         if (p == page)
         {
-            page_ref_dec(page);
+            page_ref_dec(page);  //如果映射的是同一页，抵消之前的引用计数加1
         }
         else
         {
-            page_remove_pte(pgdir, la, ptep);
+            page_remove_pte(pgdir, la, ptep); //映射的是不同页，删掉旧映射
         }
     }
     *ptep = pte_create(page2ppn(page), PTE_V | perm);
