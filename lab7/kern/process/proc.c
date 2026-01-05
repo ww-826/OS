@@ -973,11 +973,11 @@ init_main(void *arg)
     size_t nr_free_pages_store = nr_free_pages();
     size_t kernel_allocated_store = kallocated();
 
-    int pid = kernel_thread(user_main, NULL, 0);
-    if (pid <= 0)
-    {
-        panic("create user_main failed.\n");
-    }
+    // int pid = kernel_thread(user_main, NULL, 0);
+    // if (pid <= 0)
+    // {
+    //     panic("create user_main failed.\n");
+    // }
     extern void check_sync(void);
     check_sync(); // check philosopher sync problem
 

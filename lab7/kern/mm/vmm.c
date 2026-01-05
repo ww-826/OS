@@ -382,3 +382,74 @@ bool user_mem_check(struct mm_struct *mm, uintptr_t addr, size_t len, bool write
     }
     return KERN_ACCESS(addr, addr + len);
 }
+
+volatile unsigned int pgfault_num = 0;
+struct mm_struct *check_mm_struct = NULL;
+
+int do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
+    int ret = -E_INVAL;
+    struct vma_struct *vma = find_vma(mm, addr);
+
+    pgfault_num++;
+    if (vma == NULL || vma->vm_start > addr) {
+        cprintf("not valid addr %x, and  can not find it in vma\n", addr);
+        goto failed;
+    }
+    switch (error_code) {
+    case CAUSE_FETCH_PAGE_FAULT:
+        if (!(vma->vm_flags & VM_EXEC)) {
+            cprintf("do_pgfault: error: not executable\n");
+            goto failed;
+        }
+        break;
+    case CAUSE_LOAD_PAGE_FAULT:
+        if (!(vma->vm_flags & VM_READ)) {
+            cprintf("do_pgfault: error: not readable\n");
+            goto failed;
+        }
+        break;
+    case CAUSE_STORE_PAGE_FAULT:
+        if (!(vma->vm_flags & VM_WRITE)) {
+            cprintf("do_pgfault: error: not writable\n");
+            goto failed;
+        }
+        break;
+    default:
+        cprintf("do_pgfault: error: unknown error code\n");
+        goto failed;
+    }
+
+    uint32_t perm = PTE_U;
+    if (vma->vm_flags & VM_WRITE) {
+        perm |= (PTE_R | PTE_W);
+    }
+    if (vma->vm_flags & VM_READ) {
+        perm |= PTE_R;
+    }
+    if (vma->vm_flags & VM_EXEC) {
+        perm |= PTE_X;
+    }
+
+    addr = ROUNDDOWN(addr, PGSIZE);
+
+    ret = -E_NO_MEM;
+    pte_t *ptep = NULL;
+    
+    if ((ptep = get_pte(mm->pgdir, addr, 1)) == NULL) {
+        cprintf("get_pte in do_pgfault failed\n");
+        goto failed;
+    }
+    
+    if (*ptep == 0) {
+        if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL) {
+            cprintf("pgdir_alloc_page in do_pgfault failed\n");
+            goto failed;
+        }
+    } else {
+        cprintf("do_pgfault: ptep %x exists, but swap not supported\n", *ptep);
+        goto failed;
+    }
+   ret = 0;
+failed:
+    return ret;
+}

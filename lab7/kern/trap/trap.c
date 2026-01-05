@@ -149,6 +149,25 @@ void interrupt_handler(struct trapframe *tf)
     }
 }
 void kernel_execve_ret(struct trapframe *tf, uintptr_t kstacktop);
+
+static int pgfault_handler(struct trapframe *tf) {
+    extern struct mm_struct *check_mm_struct;
+    struct mm_struct *mm;
+    if (check_mm_struct != NULL) {
+        assert(current == idleproc);
+        mm = check_mm_struct;
+    }
+    else {
+        if (current == NULL) {
+            print_trapframe(tf);
+            print_regs(&tf->gpr);
+            panic("unhandled page fault.\n");
+        }
+        mm = current->mm;
+    }
+    return do_pgfault(mm, tf->cause, tf->tval);
+}
+
 void exception_handler(struct trapframe *tf)
 {
     int ret;
@@ -162,6 +181,11 @@ void exception_handler(struct trapframe *tf)
         break;
     case CAUSE_ILLEGAL_INSTRUCTION:
         cprintf("Illegal instruction\n");
+        print_trapframe(tf);
+        if (current != NULL) {
+            cprintf("Current process: %d %s\n", current->pid, current->name);
+        }
+        panic("Illegal instruction");
         break;
     case CAUSE_BREAKPOINT:
         cprintf("Breakpoint\n");
@@ -196,12 +220,24 @@ void exception_handler(struct trapframe *tf)
         break;
     case CAUSE_FETCH_PAGE_FAULT:
         cprintf("Instruction page fault\n");
+        if ((ret = pgfault_handler(tf)) != 0) {
+            print_trapframe(tf);
+            panic("handle pgfault failed. %e\n", ret);
+        }
         break;
     case CAUSE_LOAD_PAGE_FAULT:
         cprintf("Load page fault\n");
+        if ((ret = pgfault_handler(tf)) != 0) {
+            print_trapframe(tf);
+            panic("handle pgfault failed. %e\n", ret);
+        }
         break;
     case CAUSE_STORE_PAGE_FAULT:
         cprintf("Store/AMO page fault\n");
+        if ((ret = pgfault_handler(tf)) != 0) {
+            print_trapframe(tf);
+            panic("handle pgfault failed. %e\n", ret);
+        }
         break;
     default:
         print_trapframe(tf);
